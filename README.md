@@ -1,59 +1,91 @@
 # rag_app — RAG API (FAISS + sentence-transformers + OpenAI)
 
-社内文書（TXT/PDF/DOCX）を取り込み、質問すると「根拠チャンクID付き」で回答するRAG APIです。  
-FastAPIで `/ingest_file` で文書投入 → `/ask` でQA という最小構成になっています。
+社内文書（TXT / PDF / DOCX）を取り込み、質問に対して  
+**根拠チャンクID（[chunk_id]）を明示して回答する** RAG（Retrieval-Augmented Generation）API です。
+
+FastAPI を用い、  
+**文書投入 → 検索 → LLM回答** の最小構成を実装しています。
+
+---
+
+## 特徴
+- FAISS + sentence-transformers による高速検索
+- 回答には **必ず根拠チャンクIDを引用**
+- TXT / PDF / DOCX 対応
+- 再現性重視（venv / requirements / setup & run script）
+- ローカル環境で完結（GPU不要）
+
+---
 
 ## 構成
-- `api.py` : FastAPI本体（/ingest, /ingest_file, /ask, /stats, /reset）
-- `rag.py` : FAISS + sentence-transformers の検索ストア
-- `.env` : OpenAI APIキーなどの設定（**コミットしない**）
-- `index/` : FAISS index と meta（永続化）
-- `logs/events.jsonl` : 実行ログ（jsonl）
-- `scripts/setup.bat` : セットアップ（venv作成 + 依存導入）
-- `scripts/run.bat` : 起動（uvicorn）
+
+rag_app/
+├─ api.py # FastAPI本体
+├─ rag.py # RAGストア（FAISS + embedding）
+├─ requirements.txt # 依存関係
+├─ README.md
+├─ .env # APIキー（※Git管理しない）
+├─ index/ # FAISS index / meta（自動生成）
+├─ logs/ # 実行ログ（jsonl）
+└─ scripts/
+├─ setup.bat # 環境構築
+└─ run.bat # 起動
+
+
+---
 
 ## 必要要件
 - Windows
 - Python 3.10+（推奨: 3.12）
+- OpenAI API Key
+
+---
 
 ## セットアップ
-1. `.env` を `rag_app` 直下に作成（例）
 
-```env
+### 1. `.env` を作成（※コミットしない）
+`rag_app` 直下に `.env` を作成：
+
+**```env**
 OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
 OPENAI_MODEL=gpt-4o-mini
-```
+**```**
 
+※ APIキーは フルで1行 に貼り付けてください。
+2. 依存関係の導入
 
-※APIキーはフルで1行に貼り付けてください。
+cd /d C:\LLM\python_lesson\rag_app
+scripts\setup.bat
 
-2. 依存関係を導入
-- `scripts\setup.bat` をダブルクリック  
-  または cmd で：
-  ```bat
-  cd /d C:\LLM\python_lesson\rag_app
-  scripts\setup.bat
-  ```
+起動
 
-## 起動
-- `scripts\run.bat` をダブルクリック  
-または cmd で：
-```bat
 cd /d C:\LLM\python_lesson\rag_app
 scripts\run.bat
-起動すると以下でSwagger UIが開けます：
+
+Swagger UI：
 
 http://127.0.0.1:8000/docs
 
 使い方（最短）
 1) 文書投入
 
-Swagger UIで POST /ingest_file を開き、TXT/PDF/DOCXをアップロードします。
-成功すると ingested_chunks と total_chunks が返ります。
+POST /ingest_file
+
+TXT / PDF / DOCX をアップロードすると
+文書は自動で chunk 分割され、検索用に登録されます。
+
+成功時レスポンス例：
+
+{
+  "ok": true,
+  "source": "company_rules.txt",
+  "ingested_chunks": 6,
+  "total_chunks": 6
+}
 
 2) 質問
 
-POST /ask に以下を送ります：
+POST /ask
 
 {
   "question": "打刻漏れをした場合、いつまでに修正申請が必要ですか？",
@@ -61,41 +93,61 @@ POST /ask に以下を送ります：
   "debug": true
 }
 
-
 レスポンス例：
 
-answer に [chunk_id] が引用され、末尾に 根拠: [id] が出ます
+{
+  "answer": "打刻漏れが発生した場合は当日中に修正申請が必要です。[11]",
+  "retrieved": [
+    {
+      "chunk_id": 11,
+      "source": "company_rules.txt",
+      "text": "..."
+    }
+  ],
+  "latency_ms": 312
+}
 
-debug=true のとき retrieved に参照チャンクが返ります
+評価方法（品質保証）
+
+    ダミー社内規程（経費 / 勤怠 / 有給）を投入
+
+    10問すべてで
+
+        回答に [chunk_id] が含まれる
+
+        根拠チャンクが一致することを確認済み
 
 便利なエンドポイント
 
-GET /health : 生存確認
+    GET /health : 生存確認
 
-GET /stats : 取り込み状況（source別チャンク数など）
+    GET /stats : 文書投入状況
 
-POST /reset : indexを全消しして作り直し（開発用）
-
-よくあるトラブル
-OPENAI_API_KEY が設定されていません
-
-.env が rag_app 直下にあるか確認
-
-OPENAI_API_KEY=... がフルで入っているか確認
-
-サーバ再起動（Ctrl+C → scripts\run.bat）
-
-PDFが空になる
-
-スキャンPDFだとテキスト抽出できないことがあります（OCRが必要な場合あり）。
+    POST /reset : index 全削除（開発用）
 
 注意
 
-.env は機密情報です。Gitにコミットしないでください（.gitignore 推奨）。
+    .env / .venv / index / logs は Git 管理対象外
+
+    APIキーは 絶対に公開しない
+
+今後の拡張予定
+
+    Docker対応
+
+    クラウドデプロイ
+
+    自動評価スクリプト
+
+    メタ情報（ページ番号等）の強化
 
 
 ---
 
-次のステップは **`.gitignore` を作って `.env`, `.venv`, `index/`, `logs/` を除外**するのが鉄板です。  
-これも順番にやる？（すぐテンプレ出せる）
-::contentReference[oaicite:0]{index=0}
+## 次にやること（これだけ）
+README 保存できたら、cmdで👇
+
+```bat
+git add README.md
+git commit -m "Fix README formatting"
+git push
