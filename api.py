@@ -7,9 +7,6 @@ import time
 from typing import List, Optional
 from pathlib import Path
 from dotenv import dotenv_values
-print("ENV FILE:", Path(__file__).with_name(".env"))
-print("OPENAI_API_KEY length:", len(os.getenv("OPENAI_API_KEY","")))
-
 
 from fastapi import FastAPI, UploadFile, File
 from pydantic import BaseModel
@@ -27,6 +24,7 @@ ENV_PATH = Path(__file__).with_name(".env")
 def get_openai_client() -> OpenAI:
     env = dotenv_values(ENV_PATH)
     key = (env.get("OPENAI_API_KEY") or "").strip()
+
     if not key:
         raise RuntimeError(f"OPENAI_API_KEY が .env に見つかりません: {ENV_PATH}")
     return OpenAI(api_key=key)
@@ -60,13 +58,16 @@ class IngestResponse(BaseModel):
 
 class AskRequest(BaseModel):
     question: str
-    top_k: int = 6
+    retrieval_k: int = 30
+    context_k: int = 6
+    use_multi: bool = True
     debug: bool = True
 
 class RetrievedChunk(BaseModel):
-    chunk_id: int
+    chunk_id: str
     source: str
     text: str
+    score: Optional[float] = None
 
 class AskResponse(BaseModel):
     answer: str
@@ -167,7 +168,6 @@ def extract_text_from_upload(filename: str, data: bytes) -> str:
     if suffix == ".docx":
         # pip install python-docx
         from docx import Document
-import uvicorn
         doc = Document(io.BytesIO(data))
         # ★ 段落テキストを結合（表が多い場合は追加処理が必要になることもある）
         return "\n".join(p.text for p in doc.paragraphs)
@@ -214,6 +214,8 @@ def generate_answer(question: str, retrieved_chunks: list[dict]) -> str:
     for ch in retrieved_chunks:
         context_parts.append(f"[{ch['chunk_id']}] ({ch['source']})\n{ch['text']}")
 
+    context_text = "\n\n".join(context_parts)
+
     instructions = (
         "あなたは社内文書QAです。必ずCONTEXTの内容だけで回答してください。"
         "CONTEXTに根拠がない場合は『文書内に根拠が見つかりません』とだけ答えてください。"
@@ -225,29 +227,37 @@ def generate_answer(question: str, retrieved_chunks: list[dict]) -> str:
     resp = client.responses.create(
         model=OPENAI_MODEL,
         instructions=instructions,
-        input=f"CONTEXT:\n\n{'\n\n'.join(context_parts)}\n\nQUESTION:\n{question}\n",
+        input=f"CONTEXT:\n\n{context_text}\n\nQUESTION:\n{question}\n",
     )
     return resp.output_text
 
 @app.post("/ask", response_model=AskResponse)
 def ask(req: AskRequest):
     t0 = time.time()
-    retrieved = store.search(req.question, top_k=req.top_k)
+
+    # まず広く取る（Recall）
+    if req.use_multi:
+        retrieved_all = store.search_multi(req.question, top_k=req.retrieval_k)
+    else:
+        retrieved_all = store.search(req.question, top_k=req.retrieval_k)
+
+    # LLMに渡す分だけ絞る（ノイズ減）
+    retrieved = retrieved_all[: req.context_k]
 
     if not retrieved:
         latency = int((time.time() - t0) * 1000)
-
         log_event({
             "type": "ask",
             "question": req.question,
-            "top_k": req.top_k,
+            "retrieval_k": req.retrieval_k,
+            "context_k": req.context_k,
+            "use_multi": req.use_multi,
             "retrieved_count": 0,
             "retrieved_ids": [],
             "latency_ms": latency,
             "model": OPENAI_MODEL,
             "note": "no_retrieved",
         })
-
         return AskResponse(
             answer="まず /ingest で文書を投入してください。",
             retrieved=[] if req.debug else None,
@@ -260,7 +270,9 @@ def ask(req: AskRequest):
     log_event({
         "type": "ask",
         "question": req.question,
-        "top_k": req.top_k,
+        "retrieval_k": req.retrieval_k,
+        "context_k": req.context_k,
+        "use_multi": req.use_multi,
         "retrieved_count": len(retrieved),
         "retrieved_ids": [r["chunk_id"] for r in retrieved],
         "retrieved_sources": list({r["source"] for r in retrieved}),
@@ -268,14 +280,11 @@ def ask(req: AskRequest):
         "model": OPENAI_MODEL,
         "answer_len": len(answer),
     })
+
     return AskResponse(
         answer=answer,
         retrieved=[RetrievedChunk(**r) for r in retrieved] if req.debug else None,
         latency_ms=latency,
     )
 
-def main():
-    uvicorn.run(app, host="0.0.0.0", port=8000)
 
-if __name__ == "__main__":
-    main()

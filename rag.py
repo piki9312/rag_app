@@ -1,6 +1,7 @@
 # rag.py
 import os
 import json
+import re
 from typing import List, Dict, Any, Optional
 
 import numpy as np
@@ -11,7 +12,6 @@ INDEX_DIR = "index"
 INDEX_PATH = os.path.join(INDEX_DIR, "faiss.index")
 META_PATH = os.path.join(INDEX_DIR, "meta.json")
 
-# 日本語も混ざるなら多言語寄りが無難（必要なら後で変更）
 EMB_MODEL = os.getenv("EMB_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 
 
@@ -20,25 +20,51 @@ def ensure_dir():
 
 
 def chunk_text(text: str, chunk_size: int = 900, overlap: int = 150) -> List[str]:
+    """
+    改善ポイント：意味のまとまり（段落）を壊しにくい分割にする
+    → retrievalのRecallが上がりやすい
+    """
     text = text.replace("\r\n", "\n").strip()
     if not text:
         return []
-    chunks = []
-    i = 0
-    n = len(text)
-    while i < n:
-        j = min(n, i + chunk_size)
-        chunks.append(text[i:j].strip())
-        if j == n:
-            break
-        i = max(0, j - overlap)
+
+    # 段落単位（空行）で分割してから積む
+    paras = [p.strip() for p in text.split("\n\n") if p.strip()]
+    chunks, buf = [], ""
+
+    for p in paras:
+        if not buf:
+            buf = p
+        elif len(buf) + 2 + len(p) <= chunk_size:
+            buf = buf + "\n\n" + p
+        else:
+            chunks.append(buf)
+            buf = p
+    if buf:
+        chunks.append(buf)
+
+    # overlap（簡易）：前チャンク末尾を次チャンクの先頭に付与
+    if overlap > 0 and len(chunks) >= 2:
+        out = [chunks[0]]
+        for i in range(1, len(chunks)):
+            prev = out[-1]
+            prefix = prev[-overlap:]
+            out.append((prefix + "\n" + chunks[i]).strip())
+        chunks = out
+
+    # 末尾が短すぎる場合は前に吸収
+    if len(chunks) >= 2 and len(chunks[-1]) < chunk_size * 0.25:
+        chunks[-2] = (chunks[-2] + "\n" + chunks[-1]).strip()
+        chunks.pop()
+
     return [c for c in chunks if c]
 
 
 class RAGStore:
     def __init__(self):
         ensure_dir()
-        self.model = SentenceTransformer(EMB_MODEL)
+        self.emb_model_name = EMB_MODEL
+        self.model = SentenceTransformer(self.emb_model_name)
         self.index: Optional[faiss.Index] = None
         self.metas: List[Dict[str, Any]] = []
         self.next_id = 0
@@ -50,12 +76,11 @@ class RAGStore:
             batch_size=32,
             show_progress_bar=False,
             convert_to_numpy=True,
-            normalize_embeddings=True,  # cosine相当で扱いやすい
+            normalize_embeddings=True,
         ).astype(np.float32)
         return vecs
 
     def _init_index(self, dim: int):
-        # normalize_embeddings=True + IndexFlatIP => cosine類似度の近傍検索っぽくなる
         self.index = faiss.IndexFlatIP(dim)
 
     def add_text(self, source: str, text: str, chunk_size: int = 900, overlap: int = 150) -> int:
@@ -67,11 +92,13 @@ class RAGStore:
         if self.index is None:
             self._init_index(vecs.shape[1])
 
-        # IndexFlatIPはIDを保持しないので、メタ配列の順番＝検索で返るposとして扱う
         self.index.add(vecs)
 
-        for ch in chunks:
-            self.metas.append({"chunk_id": self.next_id, "source": source, "text": ch})
+        # 改善ポイント：chunk_idを「安定ID」にする（評価が壊れない）
+        # next_id方式だと、取り込み順でズレてRecall評価が死にやすい
+        for i, ch in enumerate(chunks):
+            chunk_id = f"{source}#chunk{i}"
+            self.metas.append({"chunk_id": chunk_id, "chunk_index": i, "source": source, "text": ch})
             self.next_id += 1
 
         self.save()
@@ -80,22 +107,58 @@ class RAGStore:
     def search(self, query: str, top_k: int = 6) -> List[Dict[str, Any]]:
         if self.index is None or not self.metas:
             return []
+
         qvec = self._embed([query])
         k = min(top_k, len(self.metas))
         scores, idxs = self.index.search(qvec, k)
-        idxs = idxs[0].tolist()
 
+        idxs = idxs[0].tolist()
+        scs = scores[0].tolist()
+
+        # 改善ポイント：scoreも返す（Multi-Queryで統合に必要）
         results = []
-        for pos in idxs:
-            results.append(self.metas[pos])
+        for pos, sc in zip(idxs, scs):
+            if pos < 0:
+                continue
+            meta = dict(self.metas[pos])
+            meta["score"] = float(sc)
+            results.append(meta)
         return results
+
+    def _keywordize(self, q: str) -> str:
+        q2 = re.sub(r"[^\wぁ-んァ-ヶ一-龥]+", " ", q)
+        toks = [t for t in q2.split() if len(t) >= 2]
+        return " ".join(toks[:12])
+
+    def search_multi(self, query: str, top_k: int = 20) -> List[Dict[str, Any]]:
+        """
+        改善ポイント④：Multi-Query Retrieval（Recall改善）
+        - 元質問 + キーワード抽出版 で検索して結果をマージ
+        """
+        queries = [query, self._keywordize(query)]
+        pool: List[Dict[str, Any]] = []
+        for q in queries:
+            pool.extend(self.search(q, top_k=min(10, len(self.metas) or 10)))
+
+        best: Dict[str, Dict[str, Any]] = {}
+        for r in pool:
+            cid = r["chunk_id"]
+            if cid not in best or r.get("score", -1e9) > best[cid].get("score", -1e9):
+                best[cid] = r
+
+        merged = sorted(best.values(), key=lambda x: x.get("score", 0.0), reverse=True)
+        return merged[:top_k]
 
     def save(self):
         ensure_dir()
         if self.index is not None:
             faiss.write_index(self.index, INDEX_PATH)
         with open(META_PATH, "w", encoding="utf-8") as f:
-            json.dump({"metas": self.metas, "next_id": self.next_id, "emb_model": EMB_MODEL}, f, ensure_ascii=False)
+            json.dump(
+                {"metas": self.metas, "next_id": self.next_id, "emb_model": self.emb_model_name},
+                f,
+                ensure_ascii=False,
+            )
 
     def _load(self):
         if os.path.exists(INDEX_PATH) and os.path.exists(META_PATH):
@@ -105,6 +168,13 @@ class RAGStore:
                     d = json.load(f)
                 self.metas = d.get("metas", [])
                 self.next_id = d.get("next_id", len(self.metas))
+
+                # 改善ポイント：indexとmetasの整合性チェック（ズレると致命傷）
+                if self.index is not None and self.index.ntotal != len(self.metas):
+                    self.index = None
+                    self.metas = []
+                    self.next_id = 0
+
             except Exception:
                 self.index = None
                 self.metas = []
