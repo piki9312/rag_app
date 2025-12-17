@@ -1,153 +1,40 @@
-# rag_app — RAG API (FAISS + sentence-transformers + OpenAI)
+# RAG API サンプル
 
-社内文書（TXT / PDF / DOCX）を取り込み、質問に対して  
-**根拠チャンクID（[chunk_id]）を明示して回答する** RAG（Retrieval-Augmented Generation）API です。
+## 概要
+このプロジェクトは、Retrieval-Augmented Generation (RAG) パターンを使用したAPI実装のサンプルです。外部データソースから関連情報を取得し、大規模言語モデルに統合して、より正確で文脈に基づいた応答を生成します。
 
-FastAPI を用い、  
-**文書投入 → 検索 → LLM回答** の最小構成を実装しています。
+## 機能
+- ドキュメント検索と取得
+- ベクトル埋め込み処理
+- LLMを使用した応答生成
+- RESTful API インターフェース
+- キャッシング機能
 
----
-
-## 特徴
-- FAISS + sentence-transformers による高速検索
-- 回答には **必ず根拠チャンクIDを引用**
-- TXT / PDF / DOCX 対応
-- 再現性重視（venv / requirements / setup & run script）
-- ローカル環境で完結（GPU不要）
-
----
-
-## 構成
-
-rag_app/
-├─ api.py # FastAPI本体
-├─ rag.py # RAGストア（FAISS + embedding）
-├─ requirements.txt # 依存関係
-├─ README.md
-├─ .env # APIキー（※Git管理しない）
-├─ index/ # FAISS index / meta（自動生成）
-├─ logs/ # 実行ログ（jsonl）
-└─ scripts/
-├─ setup.bat # 環境構築
-└─ run.bat # 起動
-
-
----
-
-## 必要要件
-- Windows
-- Python 3.10+（推奨: 3.12）
-- OpenAI API Key
-
----
+## アーキテクチャ
+```
+クライアント → API エンドポイント → RAG パイプライン → LLM
+                                        ↓
+                                    ベクトルDB
+                                    ドキュメントストア
+```
 
 ## セットアップ
+1. 依存関係をインストール: `pip install -r requirements.txt`
+2. 環境変数を設定: `.env` ファイルを作成
+3. ドキュメントを準備: `data/` ディレクトリに配置
+4. APIサーバーを起動: `uvicorn api:app --reload`
 
-### 1. `.env` を作成（※コミットしない）
-`rag_app` 直下に `.env` を作成：
+## API使用方法
+```bash
+curl -X POST http://127.0.0.1:8000/docs/ask \
+  -H "Content-Type: application/json" \
+  -d '{"query": "質問内容"}'
+```
 
-**```env**
-OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
-OPENAI_MODEL=gpt-4o-mini
-**```**
+## 注記(セキュリティー)
+- Python 3.9以上が必須です
+- APIキーの設定を忘れずに行ってください
+- 本番環境ではセキュリティ設定を確認してください
+- .env と data/（文書・ベクトルDB等）は GitHub に push しません
+- 本番運用では認証・ログ・アクセス制御を追加してください
 
-※ APIキーは フルで1行 に貼り付けてください。
-2. 依存関係の導入
-
-cd /d C:\LLM\python_lesson\rag_app
-scripts\setup.bat
-
-起動
-
-cd /d C:\LLM\python_lesson\rag_app
-scripts\run.bat
-
-Swagger UI：
-
-http://127.0.0.1:8000/docs
-
-使い方（最短）
-1) 文書投入
-
-POST /ingest_file
-
-TXT / PDF / DOCX をアップロードすると
-文書は自動で chunk 分割され、検索用に登録されます。
-
-成功時レスポンス例：
-
-{
-  "ok": true,
-  "source": "company_rules.txt",
-  "ingested_chunks": 6,
-  "total_chunks": 6
-}
-
-2) 質問
-
-POST /ask
-
-{
-  "question": "打刻漏れをした場合、いつまでに修正申請が必要ですか？",
-  "top_k": 6,
-  "debug": true
-}
-
-レスポンス例：
-
-{
-  "answer": "打刻漏れが発生した場合は当日中に修正申請が必要です。[11]",
-  "retrieved": [
-    {
-      "chunk_id": 11,
-      "source": "company_rules.txt",
-      "text": "..."
-    }
-  ],
-  "latency_ms": 312
-}
-
-評価方法（品質保証）
-
-    ダミー社内規程（経費 / 勤怠 / 有給）を投入
-
-    10問すべてで
-
-        回答に [chunk_id] が含まれる
-
-        根拠チャンクが一致することを確認済み
-
-便利なエンドポイント
-
-    GET /health : 生存確認
-
-    GET /stats : 文書投入状況
-
-    POST /reset : index 全削除（開発用）
-
-注意
-
-    .env / .venv / index / logs は Git 管理対象外
-
-    APIキーは 絶対に公開しない
-
-今後の拡張予定
-
-    Docker対応
-
-    クラウドデプロイ
-
-    自動評価スクリプト
-
-    メタ情報（ページ番号等）の強化
-
-
----
-
-## 次にやること（これだけ）
-README 保存できたら、cmdで👇
-
-```bat
-git add README.md
-git commit -m "Fix README formatting"
-git push
