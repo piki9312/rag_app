@@ -167,6 +167,7 @@ def extract_text_from_upload(filename: str, data: bytes) -> str:
     if suffix == ".docx":
         # pip install python-docx
         from docx import Document
+import uvicorn
         doc = Document(io.BytesIO(data))
         # ★ 段落テキストを結合（表が多い場合は追加処理が必要になることもある）
         return "\n".join(p.text for p in doc.paragraphs)
@@ -272,3 +273,9 @@ def ask(req: AskRequest):
         retrieved=[RetrievedChunk(**r) for r in retrieved] if req.debug else None,
         latency_ms=latency,
     )
+
+def main():
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+if __name__ == "__main__":
+    main()
