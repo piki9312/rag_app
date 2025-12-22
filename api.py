@@ -6,13 +6,12 @@ from collections import Counter
 import time
 from typing import List, Optional
 from pathlib import Path
-from dotenv import dotenv_values
 
 from fastapi import FastAPI, UploadFile, File
 from pydantic import BaseModel
-from openai import OpenAI
 import io
 
+from llm_client import get_openai_client
 from rag import RAGStore
 
 app = FastAPI(title="RAG API (FAISS + sentence-transformers + OpenAI)")
@@ -21,18 +20,12 @@ store = RAGStore()
 
 ENV_PATH = Path(__file__).with_name(".env")
 # OpenAI clientは「リクエスト時に作る」方が環境変数トラブルが少ない
-def get_openai_client() -> OpenAI:
-    env = dotenv_values(ENV_PATH)
-    key = (env.get("OPENAI_API_KEY") or "").strip()
-
-    if not key:
-        raise RuntimeError(f"OPENAI_API_KEY が .env に見つかりません: {ENV_PATH}")
-    return OpenAI(api_key=key)
 
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 LOG_DIR = "logs"
 LOG_PATH = os.path.join(LOG_DIR, "events.jsonl")
+
 
 def log_event(event: dict) -> None:
     """
