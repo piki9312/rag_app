@@ -62,6 +62,10 @@ rag_app/
 ├ llm_client.py     # OpenAI API 呼び出し（環境変数管理）
 ├ scripts/          # ingest / ベンチマーク用スクリプト
 ├ index/            # FAISS index / metadata（自動生成）
+├ logs/             
+├ index/             
+├ scripts/
+├ experiments/             
 ├ .env              # APIキー（Git管理しない）
 ├ requirements.txt
 └ README.md
@@ -78,9 +82,11 @@ rag_app/
 3. APIサーバーを起動: `uvicorn api:app --reload`
 4. `http://127.0.0.1:8000/docs`を開く
 
-## デモ
+## Experiments
 - 完成形（社内文書QAとしてのデモ）：`experiments/01_rag_faq/README.md`
 - 技術検証（設計判断・トレードオフ）：`experiments/02_rag_poc/README.md`
+- 技術検証（推論速度・トレードオフ）：`experiments/03_inference_speed/README.md`
+- 技術検証（Retrievalキャッシュ・トレードオフ）：`experiments/04_rag_ops/README.md`
 
 ## 主なAPIエンドポイント
 - `/health` ヘルスチェック
@@ -92,6 +98,7 @@ rag_app/
   - `context_k`:LLMに渡すチャンク数
   - `use_multi`:Multi-Query Retrievalの有無
   - `debug`:取得チャンク情報の返却有無
+  - `max_new_token`:生成する最大トークン数
 
 ## 想定ユースケース
 - 社内文書検索・FAQ の PoC
@@ -99,9 +106,6 @@ rag_app/
 - LLM活用可否の技術調査
 - 本番導入前の精度・挙動確認
 
-## Experiments
-- experiments/01_rag_faq : 社内文書QA（完成形）
-- experiments/02_rag_poc : RAG設計の技術検証（PoC）
 
 ## 本実装の位置づけ
 - ⭕ 技術検証・PoC用途
