@@ -2,6 +2,8 @@
 import os
 import json
 import datetime
+import uuid
+import hashlib
 from collections import Counter
 import time
 from typing import List, Optional
@@ -26,6 +28,31 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 LOG_DIR = "logs"
 LOG_PATH = os.path.join(LOG_DIR, "events.jsonl")
 
+RETRIEVAL_CACHE_TTL_SEC = int(os.getenv("RETRIEVAL_CACHE_TTL_SEC", "600"))
+_retrieval_cache: dict[str, tuple[float, list[dict]]] = {}
+
+def _norm_q(q: str) -> str:
+    return " ".join(q.strip().split()).lower()
+
+def _cache_key_retrieval(question: str, retrieval_k: int, use_multi: bool, index_version: str, emb_model: str) -> str:
+    s = f"{emb_model}|{index_version}|{retrieval_k}|{int(use_multi)}|{_norm_q(question)}"
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+def _get_retrieval_cache(key: str) -> tuple[bool, list[dict]]:
+    hit = False
+    now = time.time()
+    item = _retrieval_cache.get(key)
+    if item:
+        ts, val = item
+        if now - ts <= RETRIEVAL_CACHE_TTL_SEC:
+            hit = True
+            return hit, val
+        else:
+            _retrieval_cache.pop(key, None)
+    return hit, []
+
+def _set_retrieval_cache(key: str, val: list[dict]) -> None:
+    _retrieval_cache[key] = (time.time(), val)
 
 def log_event(event: dict) -> None:
     """
@@ -55,6 +82,7 @@ class AskRequest(BaseModel):
     context_k: int = 6
     use_multi: bool = True
     debug: bool = True
+    max_new_tokens: int = 256
 
 class RetrievedChunk(BaseModel):
     chunk_id: str
@@ -66,6 +94,7 @@ class AskResponse(BaseModel):
     answer: str
     retrieved: Optional[List[RetrievedChunk]] = None
     latency_ms: int
+    trace_id: str
 
 
 @app.get("/health")
@@ -202,7 +231,7 @@ async def ingest_file(
     })
     return {"ok": True, "source": filename, "ingested_chunks": n, "total_chunks": len(store.metas)}
 
-def generate_answer(question: str, retrieved_chunks: list[dict]) -> str:
+def generate_answer(question: str, retrieved_chunks: list[dict], max_new_tokens: int) -> str:
     context_parts = []
     for ch in retrieved_chunks:
         context_parts.append(f"[{ch['chunk_id']}] ({ch['source']})\n{ch['text']}")
@@ -221,24 +250,38 @@ def generate_answer(question: str, retrieved_chunks: list[dict]) -> str:
         model=OPENAI_MODEL,
         instructions=instructions,
         input=f"CONTEXT:\n\n{context_text}\n\nQUESTION:\n{question}\n",
+        max_output_tokens=max_new_tokens,
     )
     return resp.output_text
 
 @app.post("/ask", response_model=AskResponse)
 def ask(req: AskRequest):
     t0 = time.time()
+    trace_id = uuid.uuid4().hex[:12]  # ログの相関用に短いIDを作る
+
+    index_v = store.index_version()
+    emb_model = os.getenv("EMB_MODEL", "unknown")
+    cache_key = _cache_key_retrieval(req.question, req.retrieval_k, req.use_multi, index_v, emb_model)
+
+    t_retrieval0 = time.time()
+    cache_hit, retrieved_all = _get_retrieval_cache(cache_key)
 
     # まず広く取る（Recall）
-    if req.use_multi:
-        retrieved_all = store.search_multi(req.question, top_k=req.retrieval_k)
-    else:
-        retrieved_all = store.search(req.question, top_k=req.retrieval_k)
+    if not cache_hit:
+        if req.use_multi:
+            retrieved_all = store.search_multi(req.question, top_k=req.retrieval_k)
+        else:
+            retrieved_all = store.search(req.question, top_k=req.retrieval_k)
+        _set_retrieval_cache(cache_key, retrieved_all)
+
+    t_retrieval1 = time.time()
+    retrieval_ms = int((t_retrieval1 - t_retrieval0) * 1000)
 
     # LLMに渡す分だけ絞る（ノイズ減）
     retrieved = retrieved_all[: req.context_k]
 
     if not retrieved:
-        latency = int((time.time() - t0) * 1000)
+        total_ms = int((time.time() - t0) * 1000)
         log_event({
             "type": "ask",
             "question": req.question,
@@ -247,18 +290,28 @@ def ask(req: AskRequest):
             "use_multi": req.use_multi,
             "retrieved_count": 0,
             "retrieved_ids": [],
-            "latency_ms": latency,
+            "cache_hit": cache_hit,
+            "retrieval_ms": retrieval_ms,
+            "index_version": index_v,
+            "cache_key_prefix": cache_key[:8],
+            "retrieved_count_all": len(retrieved_all),
+            "cache_ttl_sec": RETRIEVAL_CACHE_TTL_SEC,
+            "total_ms": total_ms,
             "model": OPENAI_MODEL,
             "note": "no_retrieved",
+            "trace_id": trace_id,
         })
         return AskResponse(
             answer="まず /ingest で文書を投入してください。",
             retrieved=[] if req.debug else None,
-            latency_ms=latency,
+            latency_ms=total_ms,
+            trace_id=trace_id,
         )
 
-    answer = generate_answer(req.question, retrieved)
-    latency = int((time.time() - t0) * 1000)
+    t_llm0 = time.time()
+    answer = generate_answer(req.question, retrieved, req.max_new_tokens)
+    t_llm1 = time.time()
+    total_ms = int((time.time() - t0) * 1000)
 
     log_event({
         "type": "ask",
@@ -269,7 +322,14 @@ def ask(req: AskRequest):
         "retrieved_count": len(retrieved),
         "retrieved_ids": [r["chunk_id"] for r in retrieved],
         "retrieved_sources": list({r["source"] for r in retrieved}),
-        "latency_ms": latency,
+        "cache_hit": cache_hit,
+        "retrieval_ms": retrieval_ms,
+        "index_version": index_v,
+        "cache_key_prefix": cache_key[:8],
+        "retrieved_count_all": len(retrieved_all),
+        "cache_ttl_sec": RETRIEVAL_CACHE_TTL_SEC,
+        "llm_ms": int((t_llm1 - t_llm0) * 1000),
+        "total_ms": total_ms,
         "model": OPENAI_MODEL,
         "answer_len": len(answer),
     })
@@ -277,7 +337,8 @@ def ask(req: AskRequest):
     return AskResponse(
         answer=answer,
         retrieved=[RetrievedChunk(**r) for r in retrieved] if req.debug else None,
-        latency_ms=latency,
+        latency_ms=total_ms,
+        trace_id=trace_id,
     )
 
 
