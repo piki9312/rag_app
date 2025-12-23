@@ -8,6 +8,9 @@ import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
 
+from pathlib import Path
+import hashlib
+
 INDEX_DIR = "index"
 INDEX_PATH = os.path.join(INDEX_DIR, "faiss.index")
 META_PATH = os.path.join(INDEX_DIR, "meta.json")
@@ -59,6 +62,16 @@ def chunk_text(text: str, chunk_size: int = 900, overlap: int = 150) -> List[str
 
     return [c for c in chunks if c]
 
+def _file_fp(path: str) -> str:
+    p = Path(path)
+    if not p.exists():
+        return "missing"
+    st = p.stat()
+    return f"{int(st.st_mtime)}:{st.st_size}"
+
+def compute_index_version() -> str:
+    # まずは mtime+size で十分（必要になったら内容hashへ拡張）
+    return f"faiss={_file_fp(INDEX_PATH)}|meta={_file_fp(META_PATH)}"
 
 class RAGStore:
     def __init__(self):
@@ -70,6 +83,9 @@ class RAGStore:
         self.next_id = 0
         self._load()
 
+    def index_version(self) -> str:
+        return compute_index_version()
+    
     def _embed(self, texts: List[str]) -> np.ndarray:
         vecs = self.model.encode(
             texts,
@@ -82,6 +98,7 @@ class RAGStore:
 
     def _init_index(self, dim: int):
         self.index = faiss.IndexFlatIP(dim)
+
 
     def add_text(self, source: str, text: str, chunk_size: int = 900, overlap: int = 150) -> int:
         chunks = chunk_text(text, chunk_size, overlap)
