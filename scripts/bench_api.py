@@ -5,15 +5,16 @@ import urllib.request
 
 API_URL = "http://127.0.0.1:8000/ask"  
 QUERY = "このシステムは何をしますか？"
-RUNS = 5
+RUNS = 10
 WARMUP = 2
 
 PAYLOAD = {
-    "question": "このシステムは何をしますか？",
+    "question": "コアタイム何時から何時までですか？",
     "retrieval_k": 60,
     "context_k": 3,
-    "use_multi": True,  # Multi-Query Retrievalを使うか
+    "use_multi": False,  # Multi-Query Retrievalを使うか
     "debug": False,   # まずはFalse推奨（レスポンスが軽くなる）
+    "max_new_tokens": 256,
 }
 
 def post_json(url: str, data: dict, timeout: int = 120) -> dict:
