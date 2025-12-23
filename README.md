@@ -1,4 +1,5 @@
-# RAG API サンプル
+# RAG API (PoC)
+
 
 ## 概要
 本プロジェクトは、社内文書やマニュアルを対象とした
@@ -17,7 +18,7 @@
 - 参照した文書チャンク(chunk_id)を回答内に明示
 - 根拠のない情報は回答しない安全設計
 - FastAPIによるREST API提供
-- ローカル環境で実行可能(Poc向け)
+- ローカル環境で実行可能(PoC向け)
 
 ## アーキテクチャ
 ```bash
@@ -74,13 +75,18 @@ rag_app/
   ```
 ※`.env`はGitHubにpushしません。
 
-## APIサーバーを起動: `uvicorn api:app --reload`
+3. APIサーバーを起動: `uvicorn api:app --reload`
+4. `http://127.0.0.1:8000/docs`を開く
+
+## デモ
+- 完成形（社内文書QAとしてのデモ）：`experiments/01_rag_faq/README.md`
+- 技術検証（設計判断・トレードオフ）：`experiments/02_rag_poc/README.md`
 
 ## 主なAPIエンドポイント
 - `/health` ヘルスチェック
 - `/stats` 登録済みチャンク数・source別内訳・使用モデルを返却
 - `/ingest` テキスト文書をRAGに登録
-- `/ingent_file` PDF/txt/md/docxファイルをアップロードして登録
+- `/ingest_file` PDF/txt/md/docxファイルをアップロードして登録
 - `/ask` 質問に対してRAGに基づく回答を返却
   - `retrieval_k`:検索候補数
   - `context_k`:LLMに渡すチャンク数
@@ -92,6 +98,10 @@ rag_app/
 - RAG設計（chunk / retrieval）の検証
 - LLM活用可否の技術調査
 - 本番導入前の精度・挙動確認
+
+## Experiments
+- experiments/01_rag_faq : 社内文書QA（完成形）
+- experiments/02_rag_poc : RAG設計の技術検証（PoC）
 
 ## 本実装の位置づけ
 - ⭕ 技術検証・PoC用途
