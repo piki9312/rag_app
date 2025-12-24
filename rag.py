@@ -80,6 +80,7 @@ class RAGStore:
         self.model = SentenceTransformer(self.emb_model_name)
         self.index: Optional[faiss.Index] = None
         self.metas: List[Dict[str, Any]] = []
+        self.doc_ids: set[str] = set()
         self.next_id = 0
         self._load()
 
@@ -99,27 +100,44 @@ class RAGStore:
     def _init_index(self, dim: int):
         self.index = faiss.IndexFlatIP(dim)
 
-
     def add_text(self, source: str, text: str, chunk_size: int = 900, overlap: int = 150) -> int:
+        # 1) doc単位の重複チェック（最初にやる）
+        doc_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+        if hasattr(self, "doc_ids") and doc_hash in self.doc_ids:
+            return 0  # 既に同じ文書が入ってるのでスキップ
+
+        # 2) chunk化
         chunks = chunk_text(text, chunk_size, overlap)
         if not chunks:
             return 0
 
+        # 3) embed → indexに追加
         vecs = self._embed(chunks)
         if self.index is None:
             self._init_index(vecs.shape[1])
 
         self.index.add(vecs)
 
-        # 改善ポイント：chunk_idを「安定ID」にする（評価が壊れない）
-        # next_id方式だと、取り込み順でズレてRecall評価が死にやすい
+        # 4) doc_idsに登録（index追加が成功した後）
+        if not hasattr(self, "doc_ids"):
+            self.doc_ids = set()
+        self.doc_ids.add(doc_hash)
+
+        # 5) metas登録
         for i, ch in enumerate(chunks):
-            chunk_id = f"{source}#chunk{i}"
-            self.metas.append({"chunk_id": chunk_id, "chunk_index": i, "source": source, "text": ch})
+            chunk_id = f"{source}@{doc_hash}#chunk{i}"
+            self.metas.append({
+                "doc_id": doc_hash,
+                "chunk_id": chunk_id,
+                "chunk_index": i,
+                "source": source,
+                "text": ch
+            })
             self.next_id += 1
 
         self.save()
         return len(chunks)
+
 
     def search(self, query: str, top_k: int = 6) -> List[Dict[str, Any]]:
         if self.index is None or not self.metas:
@@ -172,7 +190,7 @@ class RAGStore:
             faiss.write_index(self.index, INDEX_PATH)
         with open(META_PATH, "w", encoding="utf-8") as f:
             json.dump(
-                {"metas": self.metas, "next_id": self.next_id, "emb_model": self.emb_model_name},
+                {"metas": self.metas, "next_id": self.next_id, "emb_model": self.emb_model_name, "doc_ids": sorted(list(self.doc_ids))},
                 f,
                 ensure_ascii=False,
             )
@@ -185,6 +203,7 @@ class RAGStore:
                     d = json.load(f)
                 self.metas = d.get("metas", [])
                 self.next_id = d.get("next_id", len(self.metas))
+                self.doc_ids = set(d.get("doc_ids", []))
 
                 # 改善ポイント：indexとmetasの整合性チェック（ズレると致命傷）
                 if self.index is not None and self.index.ntotal != len(self.metas):
