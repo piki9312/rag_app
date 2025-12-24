@@ -78,11 +78,11 @@ class IngestResponse(BaseModel):
 
 class AskRequest(BaseModel):
     question: str
-    retrieval_k: int = 30
-    context_k: int = 6
-    use_multi: bool = True
-    debug: bool = True
-    max_new_tokens: int = 256
+    retrieval_k: int = 60
+    context_k: int = 3
+    use_multi: bool = False
+    debug: bool = False
+    max_new_tokens: int = 128
 
 class RetrievedChunk(BaseModel):
     chunk_id: str
@@ -132,6 +132,12 @@ def reset(delete_files: bool = True):
     store.index = None
     store.metas = []
     store.next_id = 0
+
+    if hasattr(store, "doc_ids"):
+        store.doc_ids = set()
+
+    # ★ ついでに retrieval cache もクリア（安全）
+    _retrieval_cache.clear()
 
     # 2) 永続化ファイルを削除（任意）
     if delete_files:
@@ -197,39 +203,53 @@ def extract_text_from_upload(filename: str, data: bytes) -> str:
     raise ValueError(f"unsupported file type: {suffix}")
 
 
-@app.post("/ingest_file")
-async def ingest_file(
-    file: UploadFile = File(...),
+@app.post("/ingest_files")
+async def ingest_files(
+    files: List[UploadFile] = File(...),
     chunk_size: int = 900,
     overlap: int = 150,
 ):
     """
-    ★ 実務向けの投入口：ファイルをアップロードして、その中身をテキスト化→RAGに登録
-    - source にはファイル名を入れる（後でどの文書由来か追える）
-    - chunk_size/overlap をクエリで調整可能にしておくとチューニングが楽
+    ★ 複数ファイルをまとめて投入する
+    - files は multipart/form-data で複数指定
+    - 各ファイルごとに成功/失敗を返す（途中で落とさない）
     """
-    filename = file.filename or "uploaded"
-    data = await file.read()
+    results = []
+    ingested_total = 0
 
-    try:
-        text = extract_text_from_upload(filename, data)
-    except ValueError as e:
-        return {"ok": False, "error": str(e)}
+    for file in files:
+        filename = file.filename or "uploaded"
+        try:
+            data = await file.read()
+            text = extract_text_from_upload(filename, data)
 
-    # ★ 空っぽ抽出のPDF等もあるので軽くチェック
-    if not text.strip():
-        return {"ok": False, "error": "text extraction produced empty text (scanned PDF etc.)"}
+            if not text.strip():
+                results.append({"ok": False, "source": filename, "error": "text extraction produced empty text"})
+                continue
 
-    n = store.add_text(source=filename, text=text, chunk_size=chunk_size, overlap=overlap)
+            n = store.add_text(source=filename, text=text, chunk_size=chunk_size, overlap=overlap)
+            ingested_total += n
+
+            results.append({"ok": True, "source": filename, "ingested_chunks": n})
+        except Exception as e:
+            results.append({"ok": False, "source": filename, "error": str(e)})
+
     log_event({
-    "type": "ingest_file",
-    "source": filename,
-    "ingested_chunks": n,
-    "total_chunks": len(store.metas),
-    "chunk_size": chunk_size,
-    "overlap": overlap,
+        "type": "ingest_files",
+        "files": [r.get("source") for r in results],
+        "results": results,
+        "ingested_chunks_total": ingested_total,
+        "total_chunks": len(store.metas),
+        "chunk_size": chunk_size,
+        "overlap": overlap,
     })
-    return {"ok": True, "source": filename, "ingested_chunks": n, "total_chunks": len(store.metas)}
+
+    return {
+        "ok": all(r["ok"] for r in results),
+        "results": results,
+        "ingested_chunks_total": ingested_total,
+        "total_chunks": len(store.metas),
+    }
 
 def generate_answer(question: str, retrieved_chunks: list[dict], max_new_tokens: int) -> str:
     context_parts = []
@@ -252,7 +272,11 @@ def generate_answer(question: str, retrieved_chunks: list[dict], max_new_tokens:
         input=f"CONTEXT:\n\n{context_text}\n\nQUESTION:\n{question}\n",
         max_output_tokens=max_new_tokens,
     )
-    return resp.output_text
+    meta = {
+        "context_chars": len(context_text),
+        # "usage": getattr(resp, "usage", None)  # 取れたら
+    }
+    return resp.output_text, meta
 
 @app.post("/ask", response_model=AskResponse)
 def ask(req: AskRequest):
@@ -276,31 +300,46 @@ def ask(req: AskRequest):
 
     t_retrieval1 = time.time()
     retrieval_ms = int((t_retrieval1 - t_retrieval0) * 1000)
+    
+    retrieved_all_raw_n = len(retrieved_all)
 
-    # LLMに渡す分だけ絞る（ノイズ減）
+    seen = set()
+    deduped = []
+    for r in retrieved_all:
+        cid = r.get("chunk_id")
+        if not cid or cid in seen:
+            continue
+        seen.add(cid)
+        deduped.append(r)
+
+    retrieved_all = deduped
+    retrieved_all_dedup_n = len(retrieved_all)
+
     retrieved = retrieved_all[: req.context_k]
+
+    common = {
+    "type": "ask",
+    "trace_id": trace_id,
+    "question": req.question,
+    "context_k": req.context_k,
+    "use_multi": req.use_multi,
+    "retrieval_k": req.retrieval_k,
+    "max_new_tokens": req.max_new_tokens,     # ★追加
+    "retrieval_mode": "multi" if req.use_multi else "single",
+    "index_version": index_v,
+    "emb_model": store.emb_model_name,
+    "model": OPENAI_MODEL,
+    "cache_key_prefix": cache_key[:8],
+    "cache_hit": cache_hit,
+    "cache_ttl_sec": RETRIEVAL_CACHE_TTL_SEC,
+    "retrieval_ms": retrieval_ms,
+    "retrieved_count_all_raw": retrieved_all_raw_n,
+    "retrieved_count_all_dedup": retrieved_all_dedup_n,
+}
 
     if not retrieved:
         total_ms = int((time.time() - t0) * 1000)
-        log_event({
-            "type": "ask",
-            "question": req.question,
-            "retrieval_k": req.retrieval_k,
-            "context_k": req.context_k,
-            "use_multi": req.use_multi,
-            "retrieved_count": 0,
-            "retrieved_ids": [],
-            "cache_hit": cache_hit,
-            "retrieval_ms": retrieval_ms,
-            "index_version": index_v,
-            "cache_key_prefix": cache_key[:8],
-            "retrieved_count_all": len(retrieved_all),
-            "cache_ttl_sec": RETRIEVAL_CACHE_TTL_SEC,
-            "total_ms": total_ms,
-            "model": OPENAI_MODEL,
-            "note": "no_retrieved",
-            "trace_id": trace_id,
-        })
+        log_event({**common, "retrieved_count":0, "retrieved_ids":[], "total_ms": total_ms, "note":"no_retrieved"})
         return AskResponse(
             answer="まず /ingest で文書を投入してください。",
             retrieved=[] if req.debug else None,
@@ -309,30 +348,11 @@ def ask(req: AskRequest):
         )
 
     t_llm0 = time.time()
-    answer = generate_answer(req.question, retrieved, req.max_new_tokens)
+    answer, llm_meta = generate_answer(req.question, retrieved, req.max_new_tokens)
     t_llm1 = time.time()
     total_ms = int((time.time() - t0) * 1000)
 
-    log_event({
-        "type": "ask",
-        "question": req.question,
-        "retrieval_k": req.retrieval_k,
-        "context_k": req.context_k,
-        "use_multi": req.use_multi,
-        "retrieved_count": len(retrieved),
-        "retrieved_ids": [r["chunk_id"] for r in retrieved],
-        "retrieved_sources": list({r["source"] for r in retrieved}),
-        "cache_hit": cache_hit,
-        "retrieval_ms": retrieval_ms,
-        "index_version": index_v,
-        "cache_key_prefix": cache_key[:8],
-        "retrieved_count_all": len(retrieved_all),
-        "cache_ttl_sec": RETRIEVAL_CACHE_TTL_SEC,
-        "llm_ms": int((t_llm1 - t_llm0) * 1000),
-        "total_ms": total_ms,
-        "model": OPENAI_MODEL,
-        "answer_len": len(answer),
-    })
+    log_event({**common, "retrieved_count":len(retrieved), "retrieved_ids":[r["chunk_id"] for r in retrieved], "llm_ms":int((t_llm1 - t_llm0) * 1000), "total_ms":total_ms, "answer_len":len(answer)})
 
     return AskResponse(
         answer=answer,
