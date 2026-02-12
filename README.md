@@ -1,5 +1,7 @@
 # RAG API (PoC)
 
+[![CI](https://github.com/piki9312/rag_app/actions/workflows/ci.yml/badge.svg)](https://github.com/piki9312/rag_app/actions/workflows/ci.yml)
+[![code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 ## 概要
 本プロジェクトは、社内文書やマニュアルを対象とした

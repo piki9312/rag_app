@@ -14,9 +14,7 @@ INDEX_DIR = "index"
 INDEX_PATH = os.path.join(INDEX_DIR, "faiss.index")
 META_PATH = os.path.join(INDEX_DIR, "meta.json")
 
-EMB_MODEL = os.getenv(
-    "EMB_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-)
+EMB_MODEL = os.getenv("EMB_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 
 
 def ensure_dir():
@@ -104,9 +102,7 @@ class RAGStore:
     def _init_index(self, dim: int):
         self.index = faiss.IndexFlatIP(dim)
 
-    def add_text(
-        self, source: str, text: str, chunk_size: int = 900, overlap: int = 150
-    ) -> int:
+    def add_text(self, source: str, text: str, chunk_size: int = 900, overlap: int = 150) -> int:
         # 1) doc単位の重複チェック（最初にやる）
         doc_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
         if hasattr(self, "doc_ids") and doc_hash in self.doc_ids:

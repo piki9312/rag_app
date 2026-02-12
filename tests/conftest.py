@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 # Skip manual test scripts during collection (they execute at import time)
 collect_ignore = ["test_openai_manual.py", "test_questions_manual.py"]
 
+
 @pytest.fixture()
 def rag_store():
     """Create a fresh in-memory RAGStore (no disk persistence)."""

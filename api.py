@@ -180,9 +180,7 @@ def reset(delete_files: bool = True):
 
 @app.post("/ingest", response_model=IngestResponse)
 def ingest(req: IngestRequest):
-    n = store.add_text(
-        req.source, req.text, chunk_size=req.chunk_size, overlap=req.overlap
-    )
+    n = store.add_text(req.source, req.text, chunk_size=req.chunk_size, overlap=req.overlap)
     log_event(
         {
             "type": "ingest",
@@ -261,9 +259,7 @@ async def ingest_files(
                 )
                 continue
 
-            n = store.add_text(
-                source=filename, text=text, chunk_size=chunk_size, overlap=overlap
-            )
+            n = store.add_text(source=filename, text=text, chunk_size=chunk_size, overlap=overlap)
             ingested_total += n
 
             results.append({"ok": True, "source": filename, "ingested_chunks": n})
@@ -290,9 +286,7 @@ async def ingest_files(
     }
 
 
-def generate_answer(
-    question: str, retrieved_chunks: list[dict], max_new_tokens: int
-) -> str:
+def generate_answer(question: str, retrieved_chunks: list[dict], max_new_tokens: int) -> str:
     context_parts = []
     for ch in retrieved_chunks:
         context_parts.append(f"[{ch['chunk_id']}] ({ch['source']})\n{ch['text']}")

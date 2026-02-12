@@ -89,9 +89,7 @@ class TestRAGStore:
         assert results == []
 
     def test_search_multi_returns_results(self, rag_store):
-        rag_store.add_text(
-            "rules", "経費精算の締め日は毎月25日です。レシートの添付が必須です。"
-        )
+        rag_store.add_text("rules", "経費精算の締め日は毎月25日です。レシートの添付が必須です。")
         results = rag_store.search_multi("経費精算の締め日", top_k=5)
         assert len(results) >= 1
 
