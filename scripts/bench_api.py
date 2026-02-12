@@ -1,9 +1,9 @@
-import time
 import json
 import statistics
+import time
 import urllib.request
 
-API_URL = "http://127.0.0.1:8000/ask"  
+API_URL = "http://127.0.0.1:8000/ask"
 QUERY = "このシステムは何をしますか？"
 RUNS = 10
 WARMUP = 2
@@ -13,9 +13,10 @@ PAYLOAD = {
     "retrieval_k": 60,
     "context_k": 3,
     "use_multi": False,  # Multi-Query Retrievalを使うか
-    "debug": False,   # まずはFalse推奨（レスポンスが軽くなる）
+    "debug": False,  # まずはFalse推奨（レスポンスが軽くなる）
     "max_new_tokens": 256,
 }
+
 
 def post_json(url: str, data: dict, timeout: int = 120) -> dict:
     body = json.dumps(data).encode("utf-8")
@@ -27,6 +28,7 @@ def post_json(url: str, data: dict, timeout: int = 120) -> dict:
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
 
 def main():
     # warmup
@@ -53,6 +55,7 @@ def main():
     print(f"runs={RUNS}, warmup={WARMUP}")
     print(f"avg={avg:.3f}s, p50={p50:.3f}s, p95≈{p95:.3f}s")
     print("raw:", [round(t, 3) for t in times])
+
 
 if __name__ == "__main__":
     main()

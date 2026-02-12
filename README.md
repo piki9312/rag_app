@@ -60,45 +60,47 @@ rag_app/
 ├ api.py            # FastAPI（入出力・ルーティング）
 ├ rag.py            # RAGロジック（検索・chunk・embedding）
 ├ llm_client.py     # OpenAI API 呼び出し（環境変数管理）
+├ tests/            # pytest テストスイート（25件）
 ├ scripts/          # ingest / ベンチマーク用スクリプト
 ├ index/            # FAISS index / metadata（自動生成）
-├ logs/             
-├ index/             
-├ scripts/
-├ experiments/             
-├ .env              # APIキー（Git管理しない）
+├ logs/             # JSONL形式のリクエストログ（自動生成）
+├ .env.example      # 環境変数テンプレート
 ├ requirements.txt
+├ Dockerfile
 └ README.md
 ```
 ## セットアップ
 1. 依存関係をインストール: `pip install -r requirements.txt`
-2. 環境変数を設定: `.env` ファイルを作成し、以下を設定します。
+2. 環境変数を設定: `.env.example` をコピーして `.env` を作成し、APIキーを設定します。
   ```
-  OPENAI_API_KEY=your_api_key
-  OPENAI_MODEL=gpt-4o-mini
+  cp .env.example .env
+  # OPENAI_API_KEY を設定
   ```
 ※`.env`はGitHubにpushしません。
 
 3. APIサーバーを起動: `uvicorn api:app --reload`
 4. `http://127.0.0.1:8000/docs`を開く
 
-## Experiments
-- 完成形（社内文書QAとしてのデモ）：`experiments/01_rag_faq/README.md`
-- 技術検証（設計判断・トレードオフ）：`experiments/02_rag_poc/README.md`
-- 技術検証（推論速度・トレードオフ）：`experiments/03_inference_speed/README.md`
-- 技術検証（Retrievalキャッシュ・トレードオフ）：`experiments/04_rag_ops/README.md`
+## テスト
+```bash
+# モックテスト（OpenAI不要）
+pytest tests/ -k "not e2e"
+
+# E2Eテスト（OPENAI_API_KEY が必要）
+pytest tests/test_e2e_openai.py
+```
 
 ## 主なAPIエンドポイント
 - `/health` ヘルスチェック
 - `/stats` 登録済みチャンク数・source別内訳・使用モデルを返却
 - `/ingest` テキスト文書をRAGに登録
-- `/ingest_file` PDF/txt/md/docxファイルをアップロードして登録
+- `/ingest_files` PDF/txt/md/docxファイルをアップロードして登録
 - `/ask` 質問に対してRAGに基づく回答を返却
   - `retrieval_k`:検索候補数
   - `context_k`:LLMに渡すチャンク数
   - `use_multi`:Multi-Query Retrievalの有無
   - `debug`:取得チャンク情報の返却有無
-  - `max_new_token`:生成する最大トークン数
+  - `max_new_tokens`:生成する最大トークン数
 
 ## 想定ユースケース
 - 社内文書検索・FAQ の PoC

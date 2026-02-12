@@ -1,17 +1,17 @@
 # api.py
-import os
-import json
 import datetime
-import uuid
 import hashlib
-from collections import Counter
-import time
-from typing import List, Optional
-from pathlib import Path
-
-from fastapi import FastAPI, UploadFile, File
-from pydantic import BaseModel
 import io
+import json
+import os
+import time
+import uuid
+from collections import Counter
+from pathlib import Path
+from typing import List, Optional
+
+from fastapi import FastAPI, File, UploadFile
+from pydantic import BaseModel
 
 from llm_client import get_openai_client
 from rag import RAGStore
@@ -31,12 +31,17 @@ LOG_PATH = os.path.join(LOG_DIR, "events.jsonl")
 RETRIEVAL_CACHE_TTL_SEC = int(os.getenv("RETRIEVAL_CACHE_TTL_SEC", "600"))
 _retrieval_cache: dict[str, tuple[float, list[dict]]] = {}
 
+
 def _norm_q(q: str) -> str:
     return " ".join(q.strip().split()).lower()
 
-def _cache_key_retrieval(question: str, retrieval_k: int, use_multi: bool, index_version: str, emb_model: str) -> str:
+
+def _cache_key_retrieval(
+    question: str, retrieval_k: int, use_multi: bool, index_version: str, emb_model: str
+) -> str:
     s = f"{emb_model}|{index_version}|{retrieval_k}|{int(use_multi)}|{_norm_q(question)}"
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
+
 
 def _get_retrieval_cache(key: str) -> tuple[bool, list[dict]]:
     hit = False
@@ -51,8 +56,10 @@ def _get_retrieval_cache(key: str) -> tuple[bool, list[dict]]:
             _retrieval_cache.pop(key, None)
     return hit, []
 
+
 def _set_retrieval_cache(key: str, val: list[dict]) -> None:
     _retrieval_cache[key] = (time.time(), val)
+
 
 def log_event(event: dict) -> None:
     """
@@ -61,7 +68,7 @@ def log_event(event: dict) -> None:
     - ローカル運用ならこのシンプル版で十分
     """
     os.makedirs(LOG_DIR, exist_ok=True)
-    event["ts"] = datetime.datetime.utcnow().isoformat()
+    event["ts"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     with open(LOG_PATH, "a", encoding="utf-8") as f:
         f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
@@ -72,9 +79,11 @@ class IngestRequest(BaseModel):
     chunk_size: int = 900
     overlap: int = 150
 
+
 class IngestResponse(BaseModel):
     ingested_chunks: int
     total_chunks: int
+
 
 class AskRequest(BaseModel):
     question: str
@@ -84,11 +93,13 @@ class AskRequest(BaseModel):
     debug: bool = False
     max_new_tokens: int = 128
 
+
 class RetrievedChunk(BaseModel):
     chunk_id: str
     source: str
     text: str
     score: Optional[float] = None
+
 
 class AskResponse(BaseModel):
     answer: str
@@ -100,6 +111,7 @@ class AskResponse(BaseModel):
 @app.get("/health")
 def health():
     return {"ok": True, "chunks": len(store.metas), "model": OPENAI_MODEL}
+
 
 @app.get("/stats")
 def stats():
@@ -116,6 +128,7 @@ def stats():
         "emb_model": os.getenv("EMB_MODEL", "unknown"),
         "openai_model": OPENAI_MODEL,
     }
+
 
 @app.post("/reset")
 def reset(delete_files: bool = True):
@@ -154,21 +167,34 @@ def reset(delete_files: bool = True):
                 except Exception as e:
                     errors.append(f"{p}: {e}")
 
-    log_event({"type": "reset", "delete_files": delete_files, "removed": removed, "errors": errors})
+    log_event(
+        {
+            "type": "reset",
+            "delete_files": delete_files,
+            "removed": removed,
+            "errors": errors,
+        }
+    )
     return {"ok": len(errors) == 0, "removed": removed, "errors": errors}
+
 
 @app.post("/ingest", response_model=IngestResponse)
 def ingest(req: IngestRequest):
-    n = store.add_text(req.source, req.text, chunk_size=req.chunk_size, overlap=req.overlap)
-    log_event({
-        "type": "ingest",
-        "source": req.source,
-        "ingested_chunks": n,
-        "total_chunks": len(store.metas),
-        "chunk_size": req.chunk_size,
-        "overlap": req.overlap,
-    })
+    n = store.add_text(
+        req.source, req.text, chunk_size=req.chunk_size, overlap=req.overlap
+    )
+    log_event(
+        {
+            "type": "ingest",
+            "source": req.source,
+            "ingested_chunks": n,
+            "total_chunks": len(store.metas),
+            "chunk_size": req.chunk_size,
+            "overlap": req.overlap,
+        }
+    )
     return IngestResponse(ingested_chunks=n, total_chunks=len(store.metas))
+
 
 def extract_text_from_upload(filename: str, data: bytes) -> str:
     suffix = Path(filename).suffix.lower()
@@ -187,6 +213,7 @@ def extract_text_from_upload(filename: str, data: bytes) -> str:
     if suffix == ".pdf":
         # pip install pypdf
         from pypdf import PdfReader
+
         reader = PdfReader(io.BytesIO(data))
         # ★ PDFはページごとに抽出。extract_text()がNoneのこともあるので or "" を入れる
         pages = [(page.extract_text() or "") for page in reader.pages]
@@ -196,6 +223,7 @@ def extract_text_from_upload(filename: str, data: bytes) -> str:
     if suffix == ".docx":
         # pip install python-docx
         from docx import Document
+
         doc = Document(io.BytesIO(data))
         # ★ 段落テキストを結合（表が多い場合は追加処理が必要になることもある）
         return "\n".join(p.text for p in doc.paragraphs)
@@ -224,25 +252,35 @@ async def ingest_files(
             text = extract_text_from_upload(filename, data)
 
             if not text.strip():
-                results.append({"ok": False, "source": filename, "error": "text extraction produced empty text"})
+                results.append(
+                    {
+                        "ok": False,
+                        "source": filename,
+                        "error": "text extraction produced empty text",
+                    }
+                )
                 continue
 
-            n = store.add_text(source=filename, text=text, chunk_size=chunk_size, overlap=overlap)
+            n = store.add_text(
+                source=filename, text=text, chunk_size=chunk_size, overlap=overlap
+            )
             ingested_total += n
 
             results.append({"ok": True, "source": filename, "ingested_chunks": n})
         except Exception as e:
             results.append({"ok": False, "source": filename, "error": str(e)})
 
-    log_event({
-        "type": "ingest_files",
-        "files": [r.get("source") for r in results],
-        "results": results,
-        "ingested_chunks_total": ingested_total,
-        "total_chunks": len(store.metas),
-        "chunk_size": chunk_size,
-        "overlap": overlap,
-    })
+    log_event(
+        {
+            "type": "ingest_files",
+            "files": [r.get("source") for r in results],
+            "results": results,
+            "ingested_chunks_total": ingested_total,
+            "total_chunks": len(store.metas),
+            "chunk_size": chunk_size,
+            "overlap": overlap,
+        }
+    )
 
     return {
         "ok": all(r["ok"] for r in results),
@@ -251,7 +289,10 @@ async def ingest_files(
         "total_chunks": len(store.metas),
     }
 
-def generate_answer(question: str, retrieved_chunks: list[dict], max_new_tokens: int) -> str:
+
+def generate_answer(
+    question: str, retrieved_chunks: list[dict], max_new_tokens: int
+) -> str:
     context_parts = []
     for ch in retrieved_chunks:
         context_parts.append(f"[{ch['chunk_id']}] ({ch['source']})\n{ch['text']}")
@@ -278,6 +319,7 @@ def generate_answer(question: str, retrieved_chunks: list[dict], max_new_tokens:
     }
     return resp.output_text, meta
 
+
 @app.post("/ask", response_model=AskResponse)
 def ask(req: AskRequest):
     t0 = time.time()
@@ -285,7 +327,9 @@ def ask(req: AskRequest):
 
     index_v = store.index_version()
     emb_model = os.getenv("EMB_MODEL", "unknown")
-    cache_key = _cache_key_retrieval(req.question, req.retrieval_k, req.use_multi, index_v, emb_model)
+    cache_key = _cache_key_retrieval(
+        req.question, req.retrieval_k, req.use_multi, index_v, emb_model
+    )
 
     t_retrieval0 = time.time()
     cache_hit, retrieved_all = _get_retrieval_cache(cache_key)
@@ -300,7 +344,7 @@ def ask(req: AskRequest):
 
     t_retrieval1 = time.time()
     retrieval_ms = int((t_retrieval1 - t_retrieval0) * 1000)
-    
+
     retrieved_all_raw_n = len(retrieved_all)
 
     seen = set()
@@ -318,28 +362,36 @@ def ask(req: AskRequest):
     retrieved = retrieved_all[: req.context_k]
 
     common = {
-    "type": "ask",
-    "trace_id": trace_id,
-    "question": req.question,
-    "context_k": req.context_k,
-    "use_multi": req.use_multi,
-    "retrieval_k": req.retrieval_k,
-    "max_new_tokens": req.max_new_tokens,     # ★追加
-    "retrieval_mode": "multi" if req.use_multi else "single",
-    "index_version": index_v,
-    "emb_model": store.emb_model_name,
-    "model": OPENAI_MODEL,
-    "cache_key_prefix": cache_key[:8],
-    "cache_hit": cache_hit,
-    "cache_ttl_sec": RETRIEVAL_CACHE_TTL_SEC,
-    "retrieval_ms": retrieval_ms,
-    "retrieved_count_all_raw": retrieved_all_raw_n,
-    "retrieved_count_all_dedup": retrieved_all_dedup_n,
-}
+        "type": "ask",
+        "trace_id": trace_id,
+        "question": req.question,
+        "context_k": req.context_k,
+        "use_multi": req.use_multi,
+        "retrieval_k": req.retrieval_k,
+        "max_new_tokens": req.max_new_tokens,
+        "retrieval_mode": "multi" if req.use_multi else "single",
+        "index_version": index_v,
+        "emb_model": store.emb_model_name,
+        "model": OPENAI_MODEL,
+        "cache_key_prefix": cache_key[:8],
+        "cache_hit": cache_hit,
+        "cache_ttl_sec": RETRIEVAL_CACHE_TTL_SEC,
+        "retrieval_ms": retrieval_ms,
+        "retrieved_count_all_raw": retrieved_all_raw_n,
+        "retrieved_count_all_dedup": retrieved_all_dedup_n,
+    }
 
     if not retrieved:
         total_ms = int((time.time() - t0) * 1000)
-        log_event({**common, "retrieved_count":0, "retrieved_ids":[], "total_ms": total_ms, "note":"no_retrieved"})
+        log_event(
+            {
+                **common,
+                "retrieved_count": 0,
+                "retrieved_ids": [],
+                "total_ms": total_ms,
+                "note": "no_retrieved",
+            }
+        )
         return AskResponse(
             answer="まず /ingest で文書を投入してください。",
             retrieved=[] if req.debug else None,
@@ -352,7 +404,16 @@ def ask(req: AskRequest):
     t_llm1 = time.time()
     total_ms = int((time.time() - t0) * 1000)
 
-    log_event({**common, "retrieved_count":len(retrieved), "retrieved_ids":[r["chunk_id"] for r in retrieved], "llm_ms":int((t_llm1 - t_llm0) * 1000), "total_ms":total_ms, "answer_len":len(answer)})
+    log_event(
+        {
+            **common,
+            "retrieved_count": len(retrieved),
+            "retrieved_ids": [r["chunk_id"] for r in retrieved],
+            "llm_ms": int((t_llm1 - t_llm0) * 1000),
+            "total_ms": total_ms,
+            "answer_len": len(answer),
+        }
+    )
 
     return AskResponse(
         answer=answer,
@@ -360,5 +421,3 @@ def ask(req: AskRequest):
         latency_ms=total_ms,
         trace_id=trace_id,
     )
-
-

@@ -1,12 +1,13 @@
 import re
-import requests
 import sys
+
+import requests
 
 API_URL = "http://127.0.0.1:8000/ask"
 
 QUESTIONS = [
     "打刻漏れをした場合、いつまでに修正申請が必要ですか？",
-    "有給休暇は何日前までに申請する必要がありますか？",             
+    "有給休暇は何日前までに申請する必要がありますか？",
     "経費精算の締め日はいつですか？",
     "在宅勤務はどのような条件で可能ですか？",
     "遅刻した場合の連絡方法は何ですか？",
@@ -37,22 +38,20 @@ QUESTIONS = [
     "社内ボランティア活動は？",
 ]
 
+
 def has_chunk_id(answer: str) -> bool:
     """
     回答文に [chunk数字] の形で chunk_id が含まれているか
     """
     return bool(re.search(r"\[chunk\d+\]", answer))
 
+
 def main():
     print("=== RAG QA Auto Test ===")
     ok_count = 0
 
     for i, q in enumerate(QUESTIONS, 1):
-        resp = requests.post(API_URL, json={
-            "question": q,
-            "top_k": 6,
-            "debug": False
-        })
+        resp = requests.post(API_URL, json={"question": q, "top_k": 6, "debug": False})
 
         if resp.status_code != 200:
             print(f"[{i}] ERROR: HTTP {resp.status_code}")
@@ -73,6 +72,7 @@ def main():
 
     if ok_count != len(QUESTIONS):
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

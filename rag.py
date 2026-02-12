@@ -1,21 +1,22 @@
 # rag.py
-import os
-import json
-import re
-from typing import List, Dict, Any, Optional
-
-import numpy as np
-import faiss
-from sentence_transformers import SentenceTransformer
-
-from pathlib import Path
 import hashlib
+import json
+import os
+import re
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import faiss
+import numpy as np
+from sentence_transformers import SentenceTransformer
 
 INDEX_DIR = "index"
 INDEX_PATH = os.path.join(INDEX_DIR, "faiss.index")
 META_PATH = os.path.join(INDEX_DIR, "meta.json")
 
-EMB_MODEL = os.getenv("EMB_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+EMB_MODEL = os.getenv(
+    "EMB_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+)
 
 
 def ensure_dir():
@@ -62,6 +63,7 @@ def chunk_text(text: str, chunk_size: int = 900, overlap: int = 150) -> List[str
 
     return [c for c in chunks if c]
 
+
 def _file_fp(path: str) -> str:
     p = Path(path)
     if not p.exists():
@@ -69,9 +71,11 @@ def _file_fp(path: str) -> str:
     st = p.stat()
     return f"{int(st.st_mtime)}:{st.st_size}"
 
+
 def compute_index_version() -> str:
     # まずは mtime+size で十分（必要になったら内容hashへ拡張）
     return f"faiss={_file_fp(INDEX_PATH)}|meta={_file_fp(META_PATH)}"
+
 
 class RAGStore:
     def __init__(self):
@@ -86,7 +90,7 @@ class RAGStore:
 
     def index_version(self) -> str:
         return compute_index_version()
-    
+
     def _embed(self, texts: List[str]) -> np.ndarray:
         vecs = self.model.encode(
             texts,
@@ -100,7 +104,9 @@ class RAGStore:
     def _init_index(self, dim: int):
         self.index = faiss.IndexFlatIP(dim)
 
-    def add_text(self, source: str, text: str, chunk_size: int = 900, overlap: int = 150) -> int:
+    def add_text(
+        self, source: str, text: str, chunk_size: int = 900, overlap: int = 150
+    ) -> int:
         # 1) doc単位の重複チェック（最初にやる）
         doc_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
         if hasattr(self, "doc_ids") and doc_hash in self.doc_ids:
@@ -126,18 +132,19 @@ class RAGStore:
         # 5) metas登録
         for i, ch in enumerate(chunks):
             chunk_id = f"{source}@{doc_hash}#chunk{i}"
-            self.metas.append({
-                "doc_id": doc_hash,
-                "chunk_id": chunk_id,
-                "chunk_index": i,
-                "source": source,
-                "text": ch
-            })
+            self.metas.append(
+                {
+                    "doc_id": doc_hash,
+                    "chunk_id": chunk_id,
+                    "chunk_index": i,
+                    "source": source,
+                    "text": ch,
+                }
+            )
             self.next_id += 1
 
         self.save()
         return len(chunks)
-
 
     def search(self, query: str, top_k: int = 6) -> List[Dict[str, Any]]:
         if self.index is None or not self.metas:
@@ -190,7 +197,12 @@ class RAGStore:
             faiss.write_index(self.index, INDEX_PATH)
         with open(META_PATH, "w", encoding="utf-8") as f:
             json.dump(
-                {"metas": self.metas, "next_id": self.next_id, "emb_model": self.emb_model_name, "doc_ids": sorted(list(self.doc_ids))},
+                {
+                    "metas": self.metas,
+                    "next_id": self.next_id,
+                    "emb_model": self.emb_model_name,
+                    "doc_ids": sorted(list(self.doc_ids)),
+                },
                 f,
                 ensure_ascii=False,
             )
