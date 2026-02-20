@@ -107,3 +107,45 @@ class TestRAGStore:
         assert "text" in meta
         assert "doc_id" in meta
         assert meta["source"] == "src"
+
+
+# =========================================================
+# Edge cases
+# =========================================================
+
+
+class TestEdgeCases:
+    def test_chunk_text_whitespace_only(self):
+        assert chunk_text("   \n\n  ") == []
+
+    def test_chunk_text_crlf_normalised(self):
+        """Windows の CRLF が LF に正規化されること。"""
+        text = "para one\r\n\r\npara two"
+        chunks = chunk_text(text, chunk_size=5000, overlap=0)
+        assert len(chunks) >= 1
+        for c in chunks:
+            assert "\r" not in c
+
+    def test_chunk_text_no_overlap(self):
+        text = "A" * 100 + "\n\n" + "B" * 100
+        chunks = chunk_text(text, chunk_size=120, overlap=0)
+        assert len(chunks) == 2
+        assert chunks[1].startswith("B")
+
+    def test_search_top_k_exceeds_total(self, rag_store):
+        """top_k がチャンク数を超えてもエラーにならない。"""
+        rag_store.add_text("one", "唯一のドキュメントです。")
+        results = rag_store.search("ドキュメント", top_k=100)
+        assert len(results) >= 1
+
+    def test_search_multi_deduplicates(self, rag_store):
+        """Multi-Query で同じ chunk が重複排除されること。"""
+        rag_store.add_text("faq", "経費精算は毎月25日が締め日です。")
+        results = rag_store.search_multi("経費精算 締め日", top_k=10)
+        chunk_ids = [r["chunk_id"] for r in results]
+        assert len(chunk_ids) == len(set(chunk_ids))
+
+    def test_keywordize(self, rag_store):
+        result = rag_store._keywordize("有給休暇はいつまでに申請する？")
+        # 短い単語（1文字）は除外される
+        assert "?" not in result

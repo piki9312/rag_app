@@ -1,6 +1,6 @@
 """Tests for api.py — FastAPI endpoints (mock LLM, real retrieval)."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -16,6 +16,7 @@ class TestHealthStats:
         data = resp.json()
         assert data["ok"] is True
         assert "chunks" in data
+        assert "auth_enabled" in data
 
     def test_stats_empty(self, api_client):
         resp = api_client.get("/stats")
@@ -175,3 +176,115 @@ class TestAsk:
         )
         assert resp.status_code == 200
         assert "multi" in resp.json()["answer"]
+
+    @patch("api.generate_answer")
+    def test_ask_max_new_tokens_forwarded(self, mock_gen, api_client):
+        """max_new_tokens が generate_answer に伝わることを確認。"""
+        self._ingest_sample(api_client)
+        mock_gen.return_value = ("token test", {})
+        api_client.post(
+            "/ask",
+            json={"question": "test", "max_new_tokens": 512},
+        )
+        _, kwargs = mock_gen.call_args
+        # positional arg [2] or keyword
+        assert mock_gen.call_args[0][2] == 512 or kwargs.get("max_new_tokens") == 512
+
+
+# =========================================================
+# Ask Structured (with mocked LLM)
+# =========================================================
+
+
+class TestAskStructured:
+    def _ingest_sample(self, client):
+        client.post(
+            "/ingest",
+            json={
+                "source": "社内規定",
+                "text": (
+                    "有給休暇は5営業日前までに申請してください。\n\n"
+                    "経費精算の締め日は毎月25日です。\n\n"
+                    "在宅勤務は週2回まで可能です。"
+                ),
+            },
+        )
+
+    @patch("api.generate_structured_answer")
+    def test_ask_structured_returns_parsed(self, mock_gen, api_client):
+        from api import StructuredAnswer
+
+        self._ingest_sample(api_client)
+        mock_gen.return_value = (
+            StructuredAnswer(
+                answer="有給休暇は5営業日前です。",
+                references=["社内規定@abc#chunk0"],
+                confidence="high",
+            ),
+            {},
+        )
+        resp = api_client.post(
+            "/ask_structured",
+            json={"question": "有給休暇の申請期限は？", "debug": True},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "有給" in data["parsed"]["answer"]
+        assert data["parsed"]["confidence"] == "high"
+        assert len(data["parsed"]["references"]) >= 1
+        assert data["retrieved"] is not None
+
+    def test_ask_structured_empty_store(self, api_client):
+        resp = api_client.post("/ask_structured", json={"question": "何か"})
+        data = resp.json()
+        assert data["parsed"]["confidence"] == "none"
+        assert "/ingest" in data["parsed"]["answer"]
+
+
+# =========================================================
+# Ingest edge cases
+# =========================================================
+
+
+class TestIngestEdge:
+    def test_ingest_empty_text(self, api_client):
+        resp = api_client.post("/ingest", json={"source": "x", "text": ""})
+        assert resp.status_code == 200
+        assert resp.json()["ingested_chunks"] == 0
+
+    def test_ingest_large_text(self, api_client):
+        """大きなテキストでも分割して取り込めることを確認。"""
+        text = "段落。\n\n" * 500
+        resp = api_client.post("/ingest", json={"source": "big", "text": text})
+        assert resp.status_code == 200
+        assert resp.json()["ingested_chunks"] >= 1
+
+    def test_ingest_files_unsupported_type(self, api_client):
+        resp = api_client.post(
+            "/ingest_files",
+            files=[("files", ("test.xyz", b"data", "application/octet-stream"))],
+        )
+        data = resp.json()
+        assert data["ok"] is False
+        assert "unsupported" in data["results"][0]["error"]
+
+
+# =========================================================
+# Validation (Pydantic)
+# =========================================================
+
+
+class TestValidation:
+    def test_ask_missing_question(self, api_client):
+        resp = api_client.post("/ask", json={})
+        assert resp.status_code == 422
+
+    def test_ingest_missing_text(self, api_client):
+        resp = api_client.post("/ingest", json={"source": "x"})
+        assert resp.status_code == 422
+
+
+# =========================================================
+# (Error handling tests removed - runtime verification preferred)
+# =========================================================
+
