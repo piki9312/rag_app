@@ -33,14 +33,20 @@ def rag_store():
     return store
 
 
-@pytest.fixture()
-def api_client(monkeypatch, tmp_path):
-    """FastAPI TestClient with isolated index/log dirs."""
+def _make_api_client(monkeypatch, api_key_env: str = ""):
+    """TestClient を生成する共通ヘルパー。
+
+    api_key_env が空文字なら認証無効 (PoC モード)、
+    値を渡せばその API キーで認証有効になる。
+    """
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake")
 
-    # FAISS C++ cannot handle non-ASCII paths (e.g. Japanese usernames in %TEMP%)
-    import tempfile
+    # 認証キーを設定 (空文字 = 認証無効)
+    import api as api_mod
 
+    monkeypatch.setattr(api_mod, "RAG_API_KEY", api_key_env)
+
+    # FAISS C++ cannot handle non-ASCII paths (e.g. Japanese usernames in %TEMP%)
     ascii_tmp = os.path.join("C:\\tmp", "rag_test_" + os.urandom(4).hex())
     os.makedirs(ascii_tmp, exist_ok=True)
 
@@ -50,7 +56,6 @@ def api_client(monkeypatch, tmp_path):
     os.makedirs(log_dir, exist_ok=True)
 
     # Isolate file I/O
-    import api as api_mod
     import rag as rag_mod
 
     monkeypatch.setattr(rag_mod, "INDEX_DIR", idx_dir)
@@ -69,9 +74,29 @@ def api_client(monkeypatch, tmp_path):
     from fastapi.testclient import TestClient
 
     client = TestClient(api_mod.app)
+    return client, ascii_tmp
+
+
+@pytest.fixture()
+def api_client(monkeypatch, tmp_path):
+    """FastAPI TestClient with isolated index/log dirs (auth disabled)."""
+    client, ascii_tmp = _make_api_client(monkeypatch, api_key_env="")
     yield client
 
-    # Cleanup
+    import shutil
+
+    shutil.rmtree(ascii_tmp, ignore_errors=True)
+
+
+@pytest.fixture()
+def api_client_auth(monkeypatch, tmp_path):
+    """FastAPI TestClient with API key auth enabled.
+
+    テスト内では ``headers={"X-API-Key": "test-secret-key"}`` を付与する。
+    """
+    client, ascii_tmp = _make_api_client(monkeypatch, api_key_env="test-secret-key")
+    yield client
+
     import shutil
 
     shutil.rmtree(ascii_tmp, ignore_errors=True)

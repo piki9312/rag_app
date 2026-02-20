@@ -1,6 +1,10 @@
 .venv
+.env
 __pycache__/
 *.pyc
 logs/
 index/
-.env
+.git/
+.github/
+.pytest_cache/
+tests/
