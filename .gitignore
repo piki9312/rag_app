@@ -4,3 +4,5 @@ index/
 logs/
 __pycache__/
 *.pyc
+.coverage
+htmlcov/

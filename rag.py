@@ -1,14 +1,21 @@
 # rag.py
+"""RAG パイプライン — チャンク分割・embedding・FAISS 検索。"""
+
+from __future__ import annotations
+
 import hashlib
 import json
+import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer
+
+logger = logging.getLogger(__name__)
 
 INDEX_DIR = "index"
 INDEX_PATH = os.path.join(INDEX_DIR, "faiss.index")
@@ -17,14 +24,20 @@ META_PATH = os.path.join(INDEX_DIR, "meta.json")
 EMB_MODEL = os.getenv("EMB_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 
 
-def ensure_dir():
+def ensure_dir() -> None:
     os.makedirs(INDEX_DIR, exist_ok=True)
 
 
-def chunk_text(text: str, chunk_size: int = 900, overlap: int = 150) -> List[str]:
-    """
-    改善ポイント：意味のまとまり（段落）を壊しにくい分割にする
-    → retrievalのRecallが上がりやすい
+def chunk_text(text: str, chunk_size: int = 900, overlap: int = 150) -> list[str]:
+    """段落境界を尊重したチャンク分割。
+
+    Args:
+        text: 分割対象テキスト。
+        chunk_size: 1チャンクの最大文字数。
+        overlap: 前チャンク末尾を次チャンク先頭に付与する文字数。
+
+    Returns:
+        分割されたテキストチャンクのリスト。
     """
     text = text.replace("\r\n", "\n").strip()
     if not text:
@@ -89,7 +102,8 @@ class RAGStore:
     def index_version(self) -> str:
         return compute_index_version()
 
-    def _embed(self, texts: List[str]) -> np.ndarray:
+    def _embed(self, texts: list[str]) -> np.ndarray:
+        """テキストリストを正規化済み embedding ベクトルに変換する。"""
         vecs = self.model.encode(
             texts,
             batch_size=32,
@@ -103,9 +117,17 @@ class RAGStore:
         self.index = faiss.IndexFlatIP(dim)
 
     def add_text(self, source: str, text: str, chunk_size: int = 900, overlap: int = 150) -> int:
+        """テキストを chunk 化して FAISS index に追加する。
+
+        同一ドキュメント (SHA-256 先頭16桁) が既に存在する場合はスキップ。
+
+        Returns:
+            追加された chunk 数。重複スキップ時は 0。
+        """
         # 1) doc単位の重複チェック（最初にやる）
         doc_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
         if hasattr(self, "doc_ids") and doc_hash in self.doc_ids:
+            logger.debug("duplicate doc skipped: %s", doc_hash)
             return 0  # 既に同じ文書が入ってるのでスキップ
 
         # 2) chunk化
@@ -142,7 +164,7 @@ class RAGStore:
         self.save()
         return len(chunks)
 
-    def search(self, query: str, top_k: int = 6) -> List[Dict[str, Any]]:
+    def search(self, query: str, top_k: int = 6) -> list[dict[str, Any]]:
         if self.index is None or not self.metas:
             return []
 
@@ -153,8 +175,8 @@ class RAGStore:
         idxs = idxs[0].tolist()
         scs = scores[0].tolist()
 
-        # 改善ポイント：scoreも返す（Multi-Queryで統合に必要）
-        results = []
+        # scoreも返す（Multi-Queryで統合に必要）
+        results: list[dict[str, Any]] = []
         for pos, sc in zip(idxs, scs):
             if pos < 0:
                 continue
@@ -168,17 +190,14 @@ class RAGStore:
         toks = [t for t in q2.split() if len(t) >= 2]
         return " ".join(toks[:12])
 
-    def search_multi(self, query: str, top_k: int = 20) -> List[Dict[str, Any]]:
-        """
-        改善ポイント④：Multi-Query Retrieval（Recall改善）
-        - 元質問 + キーワード抽出版 で検索して結果をマージ
-        """
+    def search_multi(self, query: str, top_k: int = 20) -> list[dict[str, Any]]:
+        """Multi-Query Retrieval: 元質問 + キーワード版で検索しマージ。"""
         queries = [query, self._keywordize(query)]
-        pool: List[Dict[str, Any]] = []
+        pool: list[dict[str, Any]] = []
         for q in queries:
             pool.extend(self.search(q, top_k=min(10, len(self.metas) or 10)))
 
-        best: Dict[str, Dict[str, Any]] = {}
+        best: dict[str, dict[str, Any]] = {}
         for r in pool:
             cid = r["chunk_id"]
             if cid not in best or r.get("score", -1e9) > best[cid].get("score", -1e9):
@@ -187,7 +206,8 @@ class RAGStore:
         merged = sorted(best.values(), key=lambda x: x.get("score", 0.0), reverse=True)
         return merged[:top_k]
 
-    def save(self):
+    def save(self) -> None:
+        """FAISS index とメタデータを永続化する。"""
         ensure_dir()
         if self.index is not None:
             faiss.write_index(self.index, INDEX_PATH)
@@ -203,7 +223,11 @@ class RAGStore:
                 ensure_ascii=False,
             )
 
-    def _load(self):
+    def _load(self) -> None:
+        """永続ファイルから index / meta を復元する。
+
+        index と metas の件数が不一致の場合は安全のためリセットする。
+        """
         if os.path.exists(INDEX_PATH) and os.path.exists(META_PATH):
             try:
                 self.index = faiss.read_index(INDEX_PATH)
@@ -213,13 +237,19 @@ class RAGStore:
                 self.next_id = d.get("next_id", len(self.metas))
                 self.doc_ids = set(d.get("doc_ids", []))
 
-                # 改善ポイント：indexとmetasの整合性チェック（ズレると致命傷）
+                # indexとmetasの整合性チェック（ズレると致命傷）
                 if self.index is not None and self.index.ntotal != len(self.metas):
+                    logger.warning(
+                        "index/meta count mismatch (%d vs %d) — resetting",
+                        self.index.ntotal,
+                        len(self.metas),
+                    )
                     self.index = None
                     self.metas = []
                     self.next_id = 0
 
             except Exception:
+                logger.exception("failed to load index — starting fresh")
                 self.index = None
                 self.metas = []
                 self.next_id = 0
