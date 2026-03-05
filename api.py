@@ -23,6 +23,7 @@ from openai import APIError, APITimeoutError
 from pydantic import BaseModel, Field
 from starlette.requests import Request
 
+import rag as rag_mod
 from llm_client import estimate_cost, get_openai_client, retry_with_backoff
 from rag import RAGStore
 
@@ -253,11 +254,8 @@ def reset(delete_files: bool = True, _key: str | None = Depends(verify_api_key))
 
     # 2) 永続化ファイルを削除（任意）
     if delete_files:
-        # rag.py と同じ場所を削除する（indexディレクトリ）
-        paths = [
-            os.path.join("index", "faiss.index"),
-            os.path.join("index", "meta.json"),
-        ]
+        # rag.py のモジュール変数を参照（テストで monkeypatch 可能）
+        paths = [rag_mod.INDEX_PATH, rag_mod.META_PATH]
         for p in paths:
             if os.path.exists(p):
                 try:

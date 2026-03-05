@@ -1,7 +1,9 @@
 """Shared fixtures for RAG App tests."""
 
 import os
+import platform
 import sys
+import tempfile
 
 import pytest
 
@@ -47,7 +49,10 @@ def _make_api_client(monkeypatch, api_key_env: str = ""):
     monkeypatch.setattr(api_mod, "RAG_API_KEY", api_key_env)
 
     # FAISS C++ cannot handle non-ASCII paths (e.g. Japanese usernames in %TEMP%)
-    ascii_tmp = os.path.join("C:\\tmp", "rag_test_" + os.urandom(4).hex())
+    if platform.system() == "Windows":
+        ascii_tmp = os.path.join("C:\\tmp", "rag_test_" + os.urandom(4).hex())
+    else:
+        ascii_tmp = os.path.join(tempfile.gettempdir(), "rag_test_" + os.urandom(4).hex())
     os.makedirs(ascii_tmp, exist_ok=True)
 
     idx_dir = os.path.join(ascii_tmp, "index")
