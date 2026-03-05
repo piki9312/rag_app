@@ -116,7 +116,9 @@ def analyze(events: list[dict]) -> dict:
                 "p95": round(sorted(latencies)[int(len(latencies) * 0.95)] if latencies else 0, 1),
                 "max": max(latencies) if latencies else None,
             },
-            "retrieval_ms_avg": round(mean(retrieval_latencies), 1) if retrieval_latencies else None,
+            "retrieval_ms_avg": (
+                round(mean(retrieval_latencies), 1) if retrieval_latencies else None
+            ),
             "llm_ms_avg": round(mean(llm_latencies), 1) if llm_latencies else None,
         },
         "token_usage": {

@@ -67,8 +67,9 @@ class TestRetryWithBackoff:
 
     def test_retry_eventually_succeeds(self):
         """失敗後リトライで成功する。"""
-        import llm_client
         from openai import RateLimitError
+
+        import llm_client
 
         call_count = {"count": 0}
 
@@ -86,8 +87,9 @@ class TestRetryWithBackoff:
 
     def test_retry_exhausted_raises(self):
         """リトライ枚数尽きたら例外を送出。"""
-        import llm_client
         from openai import RateLimitError
+
+        import llm_client
 
         @llm_client.retry_with_backoff(max_retries=2, base_delay=0.01)
         def always_fails():
@@ -99,8 +101,9 @@ class TestRetryWithBackoff:
 
     def test_non_retryable_error_raised_immediately(self):
         """リトライ不可のエラーは即座に送出。"""
-        import llm_client
         from openai import APIError
+
+        import llm_client
 
         @llm_client.retry_with_backoff(max_retries=3)
         def client_error():
@@ -112,8 +115,9 @@ class TestRetryWithBackoff:
 
     def test_exponential_backoff_timing(self):
         """バックオフが指数関数的に増えること。"""
-        import llm_client
         from openai import RateLimitError
+
+        import llm_client
 
         times: list[float] = []
 

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TypeVar
 
 from dotenv import dotenv_values
-from openai import OpenAI, APIError, APITimeoutError, RateLimitError
+from openai import APIError, APITimeoutError, OpenAI, RateLimitError
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +56,7 @@ def get_openai_client() -> OpenAI:
     return OpenAI(api_key=key, timeout=30.0)
 
 
-def retry_with_backoff(
-    max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 10.0
-):
+def retry_with_backoff(max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 10.0):
     """エクスポーネンシャルバックオフで関数をリトライするデコレータ。
 
     Args:
@@ -77,7 +75,7 @@ def retry_with_backoff(
                     return func(*args, **kwargs)
                 except RateLimitError as e:
                     if attempt < max_retries - 1:
-                        wait_sec = min(base_delay * (2 ** attempt), max_delay)
+                        wait_sec = min(base_delay * (2**attempt), max_delay)
                         logger.warning(
                             f"rate limited (attempt {attempt+1}/{max_retries}), "
                             f"waiting {wait_sec:.1f}s: {e}"
@@ -88,7 +86,7 @@ def retry_with_backoff(
                         raise
                 except APITimeoutError as e:
                     if attempt < max_retries - 1:
-                        wait_sec = min(base_delay * (2 ** attempt), max_delay)
+                        wait_sec = min(base_delay * (2**attempt), max_delay)
                         logger.warning(
                             f"timeout (attempt {attempt+1}/{max_retries}), "
                             f"waiting {wait_sec:.1f}s: {e}"

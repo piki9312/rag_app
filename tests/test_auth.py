@@ -73,9 +73,7 @@ class TestAuthEnabled:
         assert resp.status_code == 401
 
     def test_reset_accepted_with_key(self, api_client_auth):
-        resp = api_client_auth.post(
-            "/reset?delete_files=false", headers=self.AUTH_HEADERS
-        )
+        resp = api_client_auth.post("/reset?delete_files=false", headers=self.AUTH_HEADERS)
         assert resp.status_code == 200
 
     # --- ask ---
@@ -91,9 +89,7 @@ class TestAuthEnabled:
             headers=self.AUTH_HEADERS,
         )
         mock_gen.return_value = ("ans", {})
-        resp = api_client_auth.post(
-            "/ask", json={"question": "q"}, headers=self.AUTH_HEADERS
-        )
+        resp = api_client_auth.post("/ask", json={"question": "q"}, headers=self.AUTH_HEADERS)
         assert resp.status_code == 200
 
     # --- ask_structured ---

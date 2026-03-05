@@ -59,6 +59,7 @@ class ErrorDetail(BaseModel):
 
 class ErrorResponse(BaseModel):
     """すべてのエラーで統一されたレスポンス形式。"""
+
     error: ErrorDetail
 
 
@@ -89,6 +90,7 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
         content=body.model_dump(),
         headers=getattr(exc, "headers", None),
     )
+
 
 # CORS middleware を追加（本番では origin を制限）
 app.add_middleware(
@@ -386,9 +388,7 @@ async def ingest_files(
 
 
 @retry_with_backoff(max_retries=RETRY_MAX, base_delay=RETRY_BASE, max_delay=RETRY_MAX_DELAY)
-def _call_openai_chat(
-    model: str, system: str, user_msg: str, max_tokens: int
-) -> dict:
+def _call_openai_chat(model: str, system: str, user_msg: str, max_tokens: int) -> dict:
     """OpenAI chat.completions を呼び出す（retry 付き）。"""
     client = get_openai_client()
     resp = client.chat.completions.create(
@@ -452,35 +452,41 @@ def generate_answer(
         raise HTTPException(status_code=502, detail=f"OpenAI API error: {str(e)[:100]}")
 
 
-@app.post("/ask", response_model=AskResponse)
-def ask(req: AskRequest, _key: str | None = Depends(verify_api_key)):
-    t0 = time.time()
-    trace_id = uuid.uuid4().hex[:12]  # ログの相関用に短いIDを作る
+# ---------------------------------------------------------------------------
+# 共通: 検索 → 重複排除 → context_k 件に絞り込み
+# ---------------------------------------------------------------------------
 
+
+def _retrieve_chunks(
+    req: AskRequest,
+) -> tuple[list[dict], bool, int, int, int, str]:
+    """キャッシュ付き検索 → 重複排除 → context_k 件に絞り込む。
+
+    Returns:
+        (retrieved, cache_hit, retrieval_ms,
+         raw_count, dedup_count, cache_key)
+    """
     index_v = store.index_version()
     emb_model = os.getenv("EMB_MODEL", "unknown")
     cache_key = _cache_key_retrieval(
         req.question, req.retrieval_k, req.use_multi, index_v, emb_model
     )
 
-    t_retrieval0 = time.time()
+    t0 = time.time()
     cache_hit, retrieved_all = _get_retrieval_cache(cache_key)
-
-    # まず広く取る（Recall）
     if not cache_hit:
         if req.use_multi:
             retrieved_all = store.search_multi(req.question, top_k=req.retrieval_k)
         else:
             retrieved_all = store.search(req.question, top_k=req.retrieval_k)
         _set_retrieval_cache(cache_key, retrieved_all)
+    retrieval_ms = int((time.time() - t0) * 1000)
 
-    t_retrieval1 = time.time()
-    retrieval_ms = int((t_retrieval1 - t_retrieval0) * 1000)
+    raw_count = len(retrieved_all)
 
-    retrieved_all_raw_n = len(retrieved_all)
-
-    seen = set()
-    deduped = []
+    # 重複排除
+    seen: set[str] = set()
+    deduped: list[dict] = []
     for r in retrieved_all:
         cid = r.get("chunk_id")
         if not cid or cid in seen:
@@ -488,10 +494,16 @@ def ask(req: AskRequest, _key: str | None = Depends(verify_api_key)):
         seen.add(cid)
         deduped.append(r)
 
-    retrieved_all = deduped
-    retrieved_all_dedup_n = len(retrieved_all)
+    retrieved = deduped[: req.context_k]
+    return retrieved, cache_hit, retrieval_ms, raw_count, len(deduped), cache_key
 
-    retrieved = retrieved_all[: req.context_k]
+
+@app.post("/ask", response_model=AskResponse)
+def ask(req: AskRequest, _key: str | None = Depends(verify_api_key)):
+    t0 = time.time()
+    trace_id = uuid.uuid4().hex[:12]
+
+    retrieved, cache_hit, retrieval_ms, raw_n, dedup_n, cache_key = _retrieve_chunks(req)
 
     common = {
         "type": "ask",
@@ -502,15 +514,15 @@ def ask(req: AskRequest, _key: str | None = Depends(verify_api_key)):
         "retrieval_k": req.retrieval_k,
         "max_new_tokens": req.max_new_tokens,
         "retrieval_mode": "multi" if req.use_multi else "single",
-        "index_version": index_v,
+        "index_version": store.index_version(),
         "emb_model": store.emb_model_name,
         "model": OPENAI_MODEL,
         "cache_key_prefix": cache_key[:8],
         "cache_hit": cache_hit,
         "cache_ttl_sec": RETRIEVAL_CACHE_TTL_SEC,
         "retrieval_ms": retrieval_ms,
-        "retrieved_count_all_raw": retrieved_all_raw_n,
-        "retrieved_count_all_dedup": retrieved_all_dedup_n,
+        "retrieved_count_all_raw": raw_n,
+        "retrieved_count_all_dedup": dedup_n,
     }
 
     if not retrieved:
@@ -582,9 +594,7 @@ class AskStructuredResponse(BaseModel):
 
 
 @retry_with_backoff(max_retries=RETRY_MAX, base_delay=RETRY_BASE, max_delay=RETRY_MAX_DELAY)
-def _call_openai_structured(
-    model: str, system: str, user_msg: str, max_tokens: int
-) -> dict:
+def _call_openai_structured(model: str, system: str, user_msg: str, max_tokens: int) -> dict:
     """OpenAI chat.completions を Structured Outputs で呼び出す（retry 付き）。"""
     client = get_openai_client()
     schema = {
@@ -670,9 +680,7 @@ def generate_structured_answer(
     user_msg = f"CONTEXT:\n\n{context_text}\n\nQUESTION:\n{question}\n"
 
     try:
-        result = _call_openai_structured(
-            OPENAI_MODEL, system_prompt, user_msg, max_new_tokens
-        )
+        result = _call_openai_structured(OPENAI_MODEL, system_prompt, user_msg, max_new_tokens)
         parsed_dict = result["parsed"]
         structured = StructuredAnswer(
             answer=parsed_dict.get("answer", ""),
@@ -696,31 +704,7 @@ def ask_structured(req: AskRequest, _key: str | None = Depends(verify_api_key)):
     t0 = time.time()
     trace_id = uuid.uuid4().hex[:12]
 
-    index_v = store.index_version()
-    emb_model = os.getenv("EMB_MODEL", "unknown")
-    cache_key = _cache_key_retrieval(
-        req.question, req.retrieval_k, req.use_multi, index_v, emb_model
-    )
-
-    cache_hit, retrieved_all = _get_retrieval_cache(cache_key)
-    if not cache_hit:
-        if req.use_multi:
-            retrieved_all = store.search_multi(req.question, top_k=req.retrieval_k)
-        else:
-            retrieved_all = store.search(req.question, top_k=req.retrieval_k)
-        _set_retrieval_cache(cache_key, retrieved_all)
-
-    # deduplicate
-    seen: set[str] = set()
-    deduped = []
-    for r in retrieved_all:
-        cid = r.get("chunk_id")
-        if not cid or cid in seen:
-            continue
-        seen.add(cid)
-        deduped.append(r)
-
-    retrieved = deduped[: req.context_k]
+    retrieved, cache_hit, retrieval_ms, raw_n, dedup_n, cache_key = _retrieve_chunks(req)
 
     if not retrieved:
         total_ms = int((time.time() - t0) * 1000)
@@ -736,9 +720,7 @@ def ask_structured(req: AskRequest, _key: str | None = Depends(verify_api_key)):
         )
 
     try:
-        parsed, llm_meta = generate_structured_answer(
-            req.question, retrieved, req.max_new_tokens
-        )
+        parsed, llm_meta = generate_structured_answer(req.question, retrieved, req.max_new_tokens)
     except HTTPException:
         raise
     total_ms = int((time.time() - t0) * 1000)
